@@ -26,6 +26,11 @@ import androidx.compose.material3.TextButton
 import androidx.compose.foundation.layout.Column
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.foundation.background
+import com.example.myapplication.ocr.ImageProcessor
+import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.size
+import com.example.myapplication.camera.toBitmapX
 @Composable
 fun CameraScreen() {
 
@@ -79,15 +84,22 @@ fun CameraScreen() {
                     .align(Alignment.BottomCenter)
                     .padding(bottom = 40.dp)
             ) {
+                if (isProcessing) return@CaptureButton
+
                 isProcessing = true
 
                 controller.capturePhoto { imageProxy ->
 
-                    ocrEngine.processImageProxy(imageProxy) { text ->
+                    val bitmap = imageProxy.toBitmapX()
+                    val enhanced = ImageProcessor.enhanceOnly(bitmap)
+                    ocrEngine.processBitmap(enhanced) { text ->
 
                         val result = parser.parse(text)
+
                         scanResult = result
                         isProcessing = false
+
+                        imageProxy.close()
                     }
                 }
             }
@@ -96,10 +108,10 @@ fun CameraScreen() {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.6f)),
+                        .background(Color.Black.copy(alpha = 0.6f)),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text("Processing...", color = androidx.compose.ui.graphics.Color.White)
+                    Text("Processing...", color = Color.White)
                 }
             }
         }
