@@ -28,8 +28,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.foundation.background
 import com.example.myapplication.ocr.ImageProcessor
 import androidx.compose.ui.graphics.Color
-import androidx.compose.foundation.border
-import androidx.compose.foundation.layout.size
 import com.example.myapplication.camera.toBitmapX
 @Composable
 fun CameraScreen() {
@@ -92,7 +90,7 @@ fun CameraScreen() {
 
                     val bitmap = imageProxy.toBitmapX()
                     val enhanced = ImageProcessor.enhanceOnly(bitmap)
-                    ocrEngine.processBitmap(enhanced) { text ->
+                    ocrEngine.processStable(enhanced) { text ->
 
                         val result = parser.parse(text)
 

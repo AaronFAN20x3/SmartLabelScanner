@@ -3,7 +3,6 @@ package com.example.myapplication.ocr
 import android.graphics.*
 import androidx.core.graphics.createBitmap
 import androidx.core.graphics.get
-import androidx.core.graphics.set
 
 object ImageProcessor {
 
@@ -82,5 +81,21 @@ object ImageProcessor {
         canvas.drawBitmap(original, 0f, 0f, paint)
 
         return grayBitmap
+    }
+
+    fun rotateBitmap(source: Bitmap, angle: Float): Bitmap {
+
+        val matrix = Matrix()
+        matrix.postRotate(angle)
+
+        return Bitmap.createBitmap(
+            source,
+            0,
+            0,
+            source.width,
+            source.height,
+            matrix,
+            true
+        )
     }
 }

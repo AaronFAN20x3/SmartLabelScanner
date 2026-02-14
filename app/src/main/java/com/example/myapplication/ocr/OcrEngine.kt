@@ -26,4 +26,40 @@ class OcrEngine {
                 onResult("") // 防止 loading 卡住
             }
     }
+
+    fun processStable(
+        bitmap: Bitmap,
+        onResult: (String) -> Unit
+    ) {
+
+        val base = bitmap
+
+        processBitmap(base) { text1 ->
+
+            if (text1.length > 30) {
+                onResult(text1)
+                return@processBitmap
+            }
+
+            val rotatedPlus = ImageProcessor.rotateBitmap(base, 15f)
+
+            processBitmap(rotatedPlus) { text2 ->
+
+                if (text2.length > text1.length) {
+                    onResult(text2)
+                    return@processBitmap
+                }
+
+                val rotatedMinus = ImageProcessor.rotateBitmap(base, -15f)
+
+                processBitmap(rotatedMinus) { text3 ->
+
+                    val best = listOf(text1, text2, text3)
+                        .maxByOrNull { it.length } ?: ""
+
+                    onResult(best)
+                }
+            }
+        }
+    }
 }
