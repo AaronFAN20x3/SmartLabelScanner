@@ -10,5 +10,7 @@ fun ImageProxy.toBitmapX(): Bitmap {
     val bytes = ByteArray(buffer.remaining())
     buffer.get(bytes)
 
-    return BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+    val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+
+    return bitmap
 }

@@ -8,6 +8,7 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.camera.view.PreviewView
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.ImageCaptureException
+import android.graphics.ImageFormat
 
 class CameraController(
     private val context: Context
@@ -33,7 +34,10 @@ class CameraController(
             }
 
             imageCapture =
-                ImageCapture.Builder().build()
+                ImageCapture.Builder()
+                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+                    .setBufferFormat(ImageFormat.JPEG)
+                    .build()
 
             val cameraSelector =
                 CameraSelector.DEFAULT_BACK_CAMERA

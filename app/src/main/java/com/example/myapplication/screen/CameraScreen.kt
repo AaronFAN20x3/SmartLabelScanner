@@ -90,15 +90,49 @@ fun CameraScreen() {
 
                     val bitmap = imageProxy.toBitmapX()
                     val enhanced = ImageProcessor.enhanceOnly(bitmap)
-                    ocrEngine.processStable(enhanced) { text ->
 
-                        val result = parser.parse(text)
+// 四个角度
+                    val rotations = listOf(0f, 90f, 180f, 270f)
 
-                        scanResult = result
-                        isProcessing = false
+                    var bestText = ""
+                    var bestLength = 0
 
-                        imageProxy.close()
+                    fun tryNext(index: Int) {
+
+                        // 如果 4 个方向都试完了
+                        if (index >= rotations.size) {
+
+                            val result = parser.parse(bestText)
+                            android.util.Log.d("PARSED_RESULT", result.toString())
+                            scanResult = result
+                            isProcessing = false
+                            imageProxy.close()
+
+                            return
+                        }
+
+                        // 旋转图片
+                        val rotated = ImageProcessor.rotateBitmap(
+                            enhanced,
+                            rotations[index]
+                        )
+
+                        // OCR 识别
+                        ocrEngine.processStable(rotated) { text ->
+                            android.util.Log.d("OCR_RAW", text)
+                            // 如果这次识别文字更多，就记录下来
+                            if (text.length > bestLength) {
+                                bestLength = text.length
+                                bestText = text
+                            }
+
+                            // 继续试下一个角度
+                            tryNext(index + 1)
+                        }
                     }
+
+// 从第 0 个角度开始
+                    tryNext(0)
                 }
             }
 
