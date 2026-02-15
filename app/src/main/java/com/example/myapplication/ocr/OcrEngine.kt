@@ -29,11 +29,12 @@ class OcrEngine {
 
     fun processStable(
         bitmap: Bitmap,
+        onProgress: (String) -> Unit,
         onResult: (String) -> Unit
     ) {
-
         val base = bitmap
 
+        onProgress("pass 1")
         processBitmap(base) { text1 ->
 
             if (text1.length > 30) {
@@ -43,6 +44,7 @@ class OcrEngine {
 
             val rotatedPlus = ImageProcessor.rotateBitmap(base, 15f)
 
+            onProgress("pass 2")
             processBitmap(rotatedPlus) { text2 ->
 
                 if (text2.length > text1.length) {
@@ -52,6 +54,7 @@ class OcrEngine {
 
                 val rotatedMinus = ImageProcessor.rotateBitmap(base, -15f)
 
+                onProgress("pass 3")
                 processBitmap(rotatedMinus) { text3 ->
 
                     val best = listOf(text1, text2, text3)

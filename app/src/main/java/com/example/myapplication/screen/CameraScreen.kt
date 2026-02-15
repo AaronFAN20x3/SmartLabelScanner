@@ -2,39 +2,42 @@ package com.example.myapplication.screen
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.view.PreviewView
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Text
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.myapplication.camera.CameraController
 import com.example.myapplication.camera.CameraPreview
+import com.example.myapplication.camera.toBitmapX
+import com.example.myapplication.ocr.ImageProcessor
 import com.example.myapplication.ocr.OcrEngine
 import com.example.myapplication.parser.LabelParser
 import com.example.myapplication.parser.ScanResult
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.TextButton
-import androidx.compose.foundation.layout.Column
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.foundation.background
-import com.example.myapplication.ocr.ImageProcessor
-import androidx.compose.ui.graphics.Color
-import com.example.myapplication.camera.toBitmapX
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
+import kotlin.coroutines.resume
+
 @Composable
 fun CameraScreen() {
 
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
+    // -------- Permission --------
     var hasPermission by remember { mutableStateOf(false) }
 
     val permissionLauncher =
@@ -45,198 +48,274 @@ fun CameraScreen() {
         }
 
     LaunchedEffect(Unit) {
-        if (ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.CAMERA
-            ) == PackageManager.PERMISSION_GRANTED
-        ) {
-            hasPermission = true
-        } else {
+        hasPermission = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.CAMERA
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if (!hasPermission) {
             permissionLauncher.launch(Manifest.permission.CAMERA)
         }
     }
 
-    if (hasPermission) {
+    if (!hasPermission) {
+        Text("需要相机权限")
+        return
+    }
 
-        val previewView = remember { PreviewView(context) }
-        val controller = remember { CameraController(context) }
-        val ocrEngine = remember { OcrEngine() }
-        val parser = remember { LabelParser() }
-        var scanResult by remember { mutableStateOf<ScanResult?>(null) }
-        var isProcessing by remember { mutableStateOf(false) }
-        var continuousMode by remember { mutableStateOf(true) }
+    // -------- Core objects (remember) --------
+    val previewView = remember { PreviewView(context) }
+    val controller = remember { CameraController(context) }
+    val ocrEngine = remember { OcrEngine() }
+    val parser = remember { LabelParser() }
 
-        LaunchedEffect(Unit) {
-            controller.startPreview(lifecycleOwner, previewView)
-        }
+    // -------- UI states --------
+    var scanResult by remember { mutableStateOf<ScanResult?>(null) }
 
-        Box(modifier = Modifier.fillMaxSize()) {
+    // processing gate: avoid double trigger
+    var isProcessing by remember { mutableStateOf(false) }
 
-            CameraPreview(
-                modifier = Modifier.fillMaxSize(),
-                previewView = previewView
-            )
+    // show which step we are in
+    var processingStatus by remember { mutableStateOf("Idle") }
 
-            CaptureButton(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 40.dp)
-            ) {
-                if (isProcessing) return@CaptureButton
+    // flash overlay
+    var flashGreen by remember { mutableStateOf(false) }
+    var flashText by remember { mutableStateOf("") }
 
-                isProcessing = true
+    // optional: you had it, keep it
+    var continuousMode by remember { mutableStateOf(true) }
 
-                controller.capturePhoto { imageProxy ->
+    val scope = rememberCoroutineScope()
 
-                    val bitmap = imageProxy.toBitmapX()
-                    val enhanced = ImageProcessor.enhanceOnly(bitmap)
+    LaunchedEffect(Unit) {
+        controller.startPreview(lifecycleOwner, previewView)
+    }
 
-// 四个角度
-                    val rotations = listOf(0f, 90f, 180f, 270f)
+    Box(modifier = Modifier.fillMaxSize()) {
 
-                    var bestText = ""
-                    var bestLength = 0
+        // -------- Camera preview --------
+        CameraPreview(
+            modifier = Modifier.fillMaxSize(),
+            previewView = previewView
+        )
 
-                    fun tryNext(index: Int) {
+        // -------- Capture Button --------
+        CaptureButton(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 40.dp)
+        ) {
+            if (isProcessing) return@CaptureButton
 
-                        // 如果 4 个方向都试完了
-                        if (index >= rotations.size) {
+            isProcessing = true
+            processingStatus = "Capturing..."
 
-                            val result = parser.parse(bestText)
-                            android.util.Log.d("PARSED_RESULT", result.toString())
-                            scanResult = result
-                            isProcessing = false
+            controller.capturePhoto(
+                onImageCaptured = { imageProxy ->
+
+                    // IMPORTANT: heavy work must go to coroutine background
+                    scope.launch {
+                        try {
+                            // 1) Convert imageProxy -> bitmap (then close imageProxy ASAP)
+                            processingStatus = "Converting image..."
+
+                            val bitmap: Bitmap = withContext(Dispatchers.Default) {
+                                imageProxy.toBitmapX()
+                            }
                             imageProxy.close()
 
-                            return
-                        }
+                            // ✅ "Captured" feedback (bitmap 已经拿到了，比较严谨)
+                            flashText = "Captured"
+                            flashGreen = true
+                            delay(1000)
+                            flashGreen = false
+                            flashText = ""
 
-                        // 旋转图片
-                        val rotated = ImageProcessor.rotateBitmap(
-                            enhanced,
-                            rotations[index]
-                        )
-
-                        // OCR 识别
-                        ocrEngine.processStable(rotated) { text ->
-                            android.util.Log.d("OCR_RAW", text)
-                            // 如果这次识别文字更多，就记录下来
-                            if (text.length > bestLength) {
-                                bestLength = text.length
-                                bestText = text
+                            // 2) Enhance
+                            processingStatus = "Enhancing..."
+                            val enhanced: Bitmap = withContext(Dispatchers.Default) {
+                                ImageProcessor.enhanceOnly(bitmap)
                             }
 
-                            // 继续试下一个角度
-                            tryNext(index + 1)
-                        }
-                    }
+                            // 3) OCR 4 angles, each uses processStable
+                            val rotations = listOf(0f, 90f, 180f, 270f)
 
-// 从第 0 个角度开始
-                    tryNext(0)
-                }
-            }
+                            var bestText = ""
+                            var bestLength = 0
 
-            if (isProcessing) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(Color.Black.copy(alpha = 0.6f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text("Processing...", color = Color.White)
-                }
-            }
-        }
+                            for ((idx0, angle) in rotations.withIndex()) {
+                                val angleIndex = idx0 + 1
+                                val total = rotations.size
 
-        scanResult?.let { result ->
+                                processingStatus = "Rotating ${angle.toInt()}° (${angleIndex}/${total})..."
+                                val rotated: Bitmap = withContext(Dispatchers.Default) {
+                                    ImageProcessor.rotateBitmap(enhanced, angle)
+                                }
 
-            var stockCode by remember(result) { mutableStateOf(result.stockCode ?: "") }
-            var salesOrder by remember(result) { mutableStateOf(result.salesOrder ?: "") }
-            var po by remember(result) { mutableStateOf(result.po ?: "") }
-            var qty by remember(result) { mutableStateOf(result.qty ?: "") }
-            var weight by remember(result) { mutableStateOf(result.weight ?: "") }
+                                processingStatus = "OCR ${angleIndex}/${total} (${angle.toInt()}°)..."
+                                val text = suspendCancellableOcrStable(
+                                    ocrEngine = ocrEngine,
+                                    bitmap = rotated
+                                ) { stepMsg ->
+                                    processingStatus = "OCR ${angleIndex}/${total} (${angle.toInt()}°) - $stepMsg"
+                                }
 
-            AlertDialog(
-                onDismissRequest = { scanResult = null },
+                                android.util.Log.d("OCR_RAW", text)
 
-                title = { Text("扫描结果") },
-
-                text = {
-                    Column {
-
-                        OutlinedTextField(
-                            value = stockCode,
-                            onValueChange = { stockCode = it },
-                            label = { Text("Stock Code") },
-                            isError = stockCode.isBlank()
-                        )
-
-                        OutlinedTextField(
-                            value = salesOrder,
-                            onValueChange = { salesOrder = it },
-                            label = { Text("Sales Order") },
-                            isError = salesOrder.isBlank()
-                        )
-
-                        OutlinedTextField(
-                            value = po,
-                            onValueChange = { po = it },
-                            label = { Text("PO") },
-                            isError = po.isBlank()
-                        )
-
-                        OutlinedTextField(
-                            value = qty,
-                            onValueChange = { qty = it },
-                            label = { Text("Qty") },
-                            isError = qty.isBlank()
-                        )
-
-                        OutlinedTextField(
-                            value = weight,
-                            onValueChange = { weight = it },
-                            label = { Text("Weight") },
-                            isError = weight.isBlank()
-                        )
-                    }
-                },
-
-                dismissButton = {
-                    TextButton(
-                        onClick = { scanResult = null }
-                    ) {
-                        Text("Cancel")
-                    }
-                },
-
-                confirmButton = {
-                    TextButton(
-                        onClick = {
-
-                            val finalResult = ScanResult(
-                                stockCode = stockCode,
-                                salesOrder = salesOrder,
-                                po = po,
-                                qty = qty,
-                                weight = weight
-                            )
-
-                            android.util.Log.d("FINAL_RESULT", finalResult.toString())
-
-                            if (continuousMode) {
-                                scanResult = null // 关闭弹窗但继续相机
-                            } else {
-                                scanResult = null
+                                if (text.length > bestLength) {
+                                    bestLength = text.length
+                                    bestText = text
+                                }
                             }
+
+                            // 4) Parse
+                            processingStatus = "Parsing..."
+                            val result: ScanResult = withContext(Dispatchers.Default) {
+                                parser.parse(bestText)
+                            }
+
+                            android.util.Log.d("PARSED_RESULT", result.toString())
+
+                            scanResult = result
+                            processingStatus = "Done"
+
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                            processingStatus = "Failed: ${e.message ?: "unknown"}"
+                        } finally {
+                            isProcessing = false
                         }
-                    ) {
-                        Text("Confirm")
+                    }
+                },
+                onError = { e ->
+                    e.printStackTrace()
+                    scope.launch {
+                        processingStatus = "Capture failed: ${e.message ?: "unknown"}"
+                        isProcessing = false
                     }
                 }
             )
         }
 
-    } else {
-        Text("需要相机权限")
+        // -------- Processing overlay (do NOT cover green flash) --------
+        if (isProcessing && !flashGreen) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.6f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(processingStatus, color = Color.White)
+            }
+        }
+
+        // -------- Green flash overlay --------
+        if (flashGreen) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0xFF00C853).copy(alpha = 0.55f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(flashText, color = Color.White)
+            }
+        }
     }
+
+    // -------- Result dialog --------
+    scanResult?.let { result ->
+
+        var stockCode by remember(result) { mutableStateOf(result.stockCode ?: "") }
+        var salesOrder by remember(result) { mutableStateOf(result.salesOrder ?: "") }
+        var po by remember(result) { mutableStateOf(result.po ?: "") }
+        var qty by remember(result) { mutableStateOf(result.qty ?: "") }
+        var weight by remember(result) { mutableStateOf(result.weight ?: "") }
+
+        AlertDialog(
+            onDismissRequest = { scanResult = null },
+            title = { Text("扫描结果") },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = stockCode,
+                        onValueChange = { stockCode = it },
+                        label = { Text("Stock Code") },
+                        isError = stockCode.isBlank()
+                    )
+                    OutlinedTextField(
+                        value = salesOrder,
+                        onValueChange = { salesOrder = it },
+                        label = { Text("Sales Order") },
+                        isError = salesOrder.isBlank()
+                    )
+                    OutlinedTextField(
+                        value = po,
+                        onValueChange = { po = it },
+                        label = { Text("PO") },
+                        isError = po.isBlank()
+                    )
+                    OutlinedTextField(
+                        value = qty,
+                        onValueChange = { qty = it },
+                        label = { Text("Qty") },
+                        isError = qty.isBlank()
+                    )
+                    OutlinedTextField(
+                        value = weight,
+                        onValueChange = { weight = it },
+                        label = { Text("Weight") },
+                        isError = weight.isBlank()
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { scanResult = null }) {
+                    Text("Cancel")
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val finalResult = ScanResult(
+                            stockCode = stockCode,
+                            salesOrder = salesOrder,
+                            po = po,
+                            qty = qty,
+                            weight = weight
+                        )
+                        android.util.Log.d("FINAL_RESULT", finalResult.toString())
+
+                        if (continuousMode) {
+                            scanResult = null
+                        } else {
+                            scanResult = null
+                        }
+                    }
+                ) {
+                    Text("Confirm")
+                }
+            }
+        )
+    }
+}
+
+/**
+ * callback OCR -> suspend
+ *
+ * 要求：你的 OcrEngine 有这个函数：
+ * processStable(bitmap, onProgress, onResult)
+ */
+suspend fun suspendCancellableOcrStable(
+    ocrEngine: OcrEngine,
+    bitmap: Bitmap,
+    onProgress: (String) -> Unit
+): String = suspendCancellableCoroutine { cont ->
+
+    ocrEngine.processStable(
+        bitmap = bitmap,
+        onProgress = onProgress,
+        onResult = { text ->
+            if (!cont.isCompleted) cont.resume(text)
+        }
+    )
 }
