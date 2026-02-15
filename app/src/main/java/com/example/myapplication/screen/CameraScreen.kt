@@ -85,6 +85,32 @@ fun CameraScreen() {
     var continuousMode by remember { mutableStateOf(true) }
     val scope = rememberCoroutineScope()
 
+    // ---------- helper: early stop rules ----------
+    fun mergeBetter(a: ScanResult?, b: ScanResult?): ScanResult? {
+        if (a == null) return b
+        if (b == null) return a
+        return ScanResult(
+            stockCode = a.stockCode ?: b.stockCode,
+            salesOrder = a.salesOrder ?: b.salesOrder,
+            qty = a.qty ?: b.qty,
+            po = a.po ?: b.po,
+            weight = a.weight ?: b.weight
+        )
+    }
+
+    fun isComplete(r: ScanResult?): Boolean {
+        if (r == null) return false
+        val hasMain = !r.stockCode.isNullOrBlank() && !r.salesOrder.isNullOrBlank()
+        val hasSecondary = !r.po.isNullOrBlank() || !r.qty.isNullOrBlank()
+        return hasMain && hasSecondary
+        // 如果你要最严格：五个都齐
+        // return !r.stockCode.isNullOrBlank()
+        //     && !r.salesOrder.isNullOrBlank()
+        //     && !r.po.isNullOrBlank()
+        //     && !r.qty.isNullOrBlank()
+        //     && !r.weight.isNullOrBlank()
+    }
+
     LaunchedEffect(Unit) {
         controller.startPreview(lifecycleOwner, previewView)
     }
@@ -131,17 +157,17 @@ fun CameraScreen() {
                                 ImageProcessor.enhanceOnly(bitmap)
                             }
 
-                            // 3) OCR 4 angles
+                            // 3) OCR 4 angles (early stop)
                             val rotations = listOf(0f, 90f, 180f, 270f)
 
-                            var bestText = ""
-                            var bestLen = 0
+                            var bestResult: ScanResult? = null
 
                             for ((idx0, angle) in rotations.withIndex()) {
                                 val angleIndex = idx0 + 1
                                 val total = rotations.size
 
-                                processingStatus = "Angle ${angleIndex}/${total} - Rotating ${angle.toInt()}°..."
+                                processingStatus =
+                                    "Angle ${angleIndex}/${total} - Rotating ${angle.toInt()}°..."
                                 val rotated: Bitmap = withContext(Dispatchers.Default) {
                                     ImageProcessor.rotateBitmap(enhanced, angle)
                                 }
@@ -151,22 +177,46 @@ fun CameraScreen() {
                                     ocrEngine = ocrEngine,
                                     bitmap = rotated
                                 ) { passMsg ->
-                                    processingStatus = "Angle ${angleIndex}/${total} (${angle.toInt()}°) - $passMsg"
+                                    processingStatus =
+                                        "Angle ${angleIndex}/${total} (${angle.toInt()}°) - $passMsg"
                                 }
 
-                                android.util.Log.d("OCR_RAW", text)
+                                android.util.Log.d("OCR_RAW", "angle=${angle.toInt()}°\n$text")
 
-                                if (text.length > bestLen) {
-                                    bestLen = text.length
-                                    bestText = text
+                                // ✅ parse every angle
+                                processingStatus = "Angle ${angleIndex}/${total} - Parsing..."
+                                val parsed: ScanResult = withContext(Dispatchers.Default) {
+                                    parser.parse(text)
+                                }
+
+                                android.util.Log.d(
+                                    "PARSED_STEP",
+                                    "angle=${angle.toInt()}° -> $parsed"
+                                )
+
+                                // ✅ merge
+                                bestResult = mergeBetter(bestResult, parsed)
+
+                                android.util.Log.d(
+                                    "PARSED_BEST",
+                                    "best so far -> $bestResult"
+                                )
+
+                                // ✅ early stop
+                                if (isComplete(bestResult)) {
+                                    processingStatus = "Complete ✅ (stop early)"
+                                    break
                                 }
                             }
 
-                            // 4) parse
-                            processingStatus = "Parsing..."
-                            val result: ScanResult = withContext(Dispatchers.Default) {
-                                parser.parse(bestText)
-                            }
+                            // 4) final
+                            val result = bestResult ?: ScanResult(
+                                stockCode = null,
+                                salesOrder = null,
+                                qty = null,
+                                po = null,
+                                weight = null
+                            )
 
                             android.util.Log.d("PARSED_RESULT", result.toString())
 
@@ -271,12 +321,17 @@ fun CameraScreen() {
                         val finalResult = ScanResult(
                             stockCode = stockCode,
                             salesOrder = salesOrder,
-                            po = po,
                             qty = qty,
+                            po = po,
                             weight = weight
                         )
                         android.util.Log.d("FINAL_RESULT", finalResult.toString())
-                        scanResult = null
+
+                        if (continuousMode) {
+                            scanResult = null
+                        } else {
+                            scanResult = null
+                        }
                     }
                 ) { Text("Confirm") }
             }
