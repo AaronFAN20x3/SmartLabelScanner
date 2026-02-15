@@ -37,7 +37,7 @@ fun CameraScreen() {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    // -------- Permission --------
+    // ---------- Permission ----------
     var hasPermission by remember { mutableStateOf(false) }
 
     val permissionLauncher =
@@ -63,28 +63,26 @@ fun CameraScreen() {
         return
     }
 
-    // -------- Core objects (remember) --------
+    // ---------- Core ----------
     val previewView = remember { PreviewView(context) }
     val controller = remember { CameraController(context) }
     val ocrEngine = remember { OcrEngine() }
     val parser = remember { LabelParser() }
 
-    // -------- UI states --------
+    // ---------- UI States ----------
     var scanResult by remember { mutableStateOf<ScanResult?>(null) }
 
-    // processing gate: avoid double trigger
+    // gate: avoid double trigger
     var isProcessing by remember { mutableStateOf(false) }
 
-    // show which step we are in
+    // step text
     var processingStatus by remember { mutableStateOf("Idle") }
 
-    // flash overlay
+    // flash
     var flashGreen by remember { mutableStateOf(false) }
     var flashText by remember { mutableStateOf("") }
 
-    // optional: you had it, keep it
     var continuousMode by remember { mutableStateOf(true) }
-
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(Unit) {
@@ -93,13 +91,11 @@ fun CameraScreen() {
 
     Box(modifier = Modifier.fillMaxSize()) {
 
-        // -------- Camera preview --------
         CameraPreview(
             modifier = Modifier.fillMaxSize(),
             previewView = previewView
         )
 
-        // -------- Capture Button --------
         CaptureButton(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -113,62 +109,60 @@ fun CameraScreen() {
             controller.capturePhoto(
                 onImageCaptured = { imageProxy ->
 
-                    // IMPORTANT: heavy work must go to coroutine background
                     scope.launch {
                         try {
-                            // 1) Convert imageProxy -> bitmap (then close imageProxy ASAP)
+                            // 1) imageProxy -> bitmap (then close ASAP)
                             processingStatus = "Converting image..."
-
                             val bitmap: Bitmap = withContext(Dispatchers.Default) {
                                 imageProxy.toBitmapX()
                             }
                             imageProxy.close()
 
-                            // ✅ "Captured" feedback (bitmap 已经拿到了，比较严谨)
+                            // ✅ captured flash (now you can move camera immediately)
                             flashText = "Captured"
                             flashGreen = true
-                            delay(1000)
+                            delay(300)
                             flashGreen = false
                             flashText = ""
 
-                            // 2) Enhance
+                            // 2) enhance
                             processingStatus = "Enhancing..."
                             val enhanced: Bitmap = withContext(Dispatchers.Default) {
                                 ImageProcessor.enhanceOnly(bitmap)
                             }
 
-                            // 3) OCR 4 angles, each uses processStable
+                            // 3) OCR 4 angles
                             val rotations = listOf(0f, 90f, 180f, 270f)
 
                             var bestText = ""
-                            var bestLength = 0
+                            var bestLen = 0
 
                             for ((idx0, angle) in rotations.withIndex()) {
                                 val angleIndex = idx0 + 1
                                 val total = rotations.size
 
-                                processingStatus = "Rotating ${angle.toInt()}° (${angleIndex}/${total})..."
+                                processingStatus = "Angle ${angleIndex}/${total} - Rotating ${angle.toInt()}°..."
                                 val rotated: Bitmap = withContext(Dispatchers.Default) {
                                     ImageProcessor.rotateBitmap(enhanced, angle)
                                 }
 
-                                processingStatus = "OCR ${angleIndex}/${total} (${angle.toInt()}°)..."
+                                // OCR stable with progress
                                 val text = suspendCancellableOcrStable(
                                     ocrEngine = ocrEngine,
                                     bitmap = rotated
-                                ) { stepMsg ->
-                                    processingStatus = "OCR ${angleIndex}/${total} (${angle.toInt()}°) - $stepMsg"
+                                ) { passMsg ->
+                                    processingStatus = "Angle ${angleIndex}/${total} (${angle.toInt()}°) - $passMsg"
                                 }
 
                                 android.util.Log.d("OCR_RAW", text)
 
-                                if (text.length > bestLength) {
-                                    bestLength = text.length
+                                if (text.length > bestLen) {
+                                    bestLen = text.length
                                     bestText = text
                                 }
                             }
 
-                            // 4) Parse
+                            // 4) parse
                             processingStatus = "Parsing..."
                             val result: ScanResult = withContext(Dispatchers.Default) {
                                 parser.parse(bestText)
@@ -197,7 +191,7 @@ fun CameraScreen() {
             )
         }
 
-        // -------- Processing overlay (do NOT cover green flash) --------
+        // processing overlay (do not cover green flash)
         if (isProcessing && !flashGreen) {
             Box(
                 modifier = Modifier
@@ -209,7 +203,7 @@ fun CameraScreen() {
             }
         }
 
-        // -------- Green flash overlay --------
+        // green flash overlay
         if (flashGreen) {
             Box(
                 modifier = Modifier
@@ -269,9 +263,7 @@ fun CameraScreen() {
                 }
             },
             dismissButton = {
-                TextButton(onClick = { scanResult = null }) {
-                    Text("Cancel")
-                }
+                TextButton(onClick = { scanResult = null }) { Text("Cancel") }
             },
             confirmButton = {
                 TextButton(
@@ -284,16 +276,9 @@ fun CameraScreen() {
                             weight = weight
                         )
                         android.util.Log.d("FINAL_RESULT", finalResult.toString())
-
-                        if (continuousMode) {
-                            scanResult = null
-                        } else {
-                            scanResult = null
-                        }
+                        scanResult = null
                     }
-                ) {
-                    Text("Confirm")
-                }
+                ) { Text("Confirm") }
             }
         )
     }
@@ -301,16 +286,12 @@ fun CameraScreen() {
 
 /**
  * callback OCR -> suspend
- *
- * 要求：你的 OcrEngine 有这个函数：
- * processStable(bitmap, onProgress, onResult)
  */
 suspend fun suspendCancellableOcrStable(
     ocrEngine: OcrEngine,
     bitmap: Bitmap,
     onProgress: (String) -> Unit
 ): String = suspendCancellableCoroutine { cont ->
-
     ocrEngine.processStable(
         bitmap = bitmap,
         onProgress = onProgress,
