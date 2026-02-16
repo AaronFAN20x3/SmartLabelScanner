@@ -91,25 +91,18 @@ fun CameraScreen() {
         if (b == null) return a
         return ScanResult(
             stockCode = a.stockCode ?: b.stockCode,
-            salesOrder = a.salesOrder ?: b.salesOrder,
-            qty = a.qty ?: b.qty,
-            po = a.po ?: b.po,
-            weight = a.weight ?: b.weight
+            palletId  = a.palletId  ?: b.palletId,
+            qty       = a.qty       ?: b.qty
         )
     }
 
     fun isComplete(r: ScanResult?): Boolean {
         if (r == null) return false
-        val hasMain = !r.stockCode.isNullOrBlank() && !r.salesOrder.isNullOrBlank()
-        val hasSecondary = !r.po.isNullOrBlank() || !r.qty.isNullOrBlank()
-        return hasMain && hasSecondary
-        // 如果你要最严格：五个都齐
-        // return !r.stockCode.isNullOrBlank()
-        //     && !r.salesOrder.isNullOrBlank()
-        //     && !r.po.isNullOrBlank()
-        //     && !r.qty.isNullOrBlank()
-        //     && !r.weight.isNullOrBlank()
+        return !r.palletId.isNullOrBlank()
+                && !r.qty.isNullOrBlank()
+                && !r.stockCode.isNullOrBlank()
     }
+
 
     LaunchedEffect(Unit) {
         controller.startPreview(lifecycleOwner, previewView)
@@ -212,10 +205,8 @@ fun CameraScreen() {
                             // 4) final
                             val result = bestResult ?: ScanResult(
                                 stockCode = null,
-                                salesOrder = null,
-                                qty = null,
-                                po = null,
-                                weight = null
+                                palletId = null,
+                                qty = null
                             )
 
                             android.util.Log.d("PARSED_RESULT", result.toString())
@@ -269,11 +260,9 @@ fun CameraScreen() {
     // -------- Result dialog --------
     scanResult?.let { result ->
 
-        var stockCode by remember(result) { mutableStateOf(result.stockCode ?: "") }
-        var salesOrder by remember(result) { mutableStateOf(result.salesOrder ?: "") }
-        var po by remember(result) { mutableStateOf(result.po ?: "") }
+        var palletId by remember(result) { mutableStateOf(result.palletId ?: "") }
         var qty by remember(result) { mutableStateOf(result.qty ?: "") }
-        var weight by remember(result) { mutableStateOf(result.weight ?: "") }
+        var stockCode by remember(result) { mutableStateOf(result.stockCode ?: "") }
 
         AlertDialog(
             onDismissRequest = { scanResult = null },
@@ -281,22 +270,10 @@ fun CameraScreen() {
             text = {
                 Column {
                     OutlinedTextField(
-                        value = stockCode,
-                        onValueChange = { stockCode = it },
-                        label = { Text("Stock Code") },
-                        isError = stockCode.isBlank()
-                    )
-                    OutlinedTextField(
-                        value = salesOrder,
-                        onValueChange = { salesOrder = it },
-                        label = { Text("Sales Order") },
-                        isError = salesOrder.isBlank()
-                    )
-                    OutlinedTextField(
-                        value = po,
-                        onValueChange = { po = it },
-                        label = { Text("PO") },
-                        isError = po.isBlank()
+                        value = palletId,
+                        onValueChange = { palletId = it },
+                        label = { Text("Pallet ID") },
+                        isError = palletId.isBlank()
                     )
                     OutlinedTextField(
                         value = qty,
@@ -305,10 +282,10 @@ fun CameraScreen() {
                         isError = qty.isBlank()
                     )
                     OutlinedTextField(
-                        value = weight,
-                        onValueChange = { weight = it },
-                        label = { Text("Weight") },
-                        isError = weight.isBlank()
+                        value = stockCode,
+                        onValueChange = { stockCode = it },
+                        label = { Text("Stock Code") },
+                        isError = stockCode.isBlank()
                     )
                 }
             },
@@ -320,18 +297,12 @@ fun CameraScreen() {
                     onClick = {
                         val finalResult = ScanResult(
                             stockCode = stockCode,
-                            salesOrder = salesOrder,
-                            qty = qty,
-                            po = po,
-                            weight = weight
+                            palletId = palletId,
+                            qty = qty
                         )
                         android.util.Log.d("FINAL_RESULT", finalResult.toString())
 
-                        if (continuousMode) {
-                            scanResult = null
-                        } else {
-                            scanResult = null
-                        }
+                        scanResult = null
                     }
                 ) { Text("Confirm") }
             }

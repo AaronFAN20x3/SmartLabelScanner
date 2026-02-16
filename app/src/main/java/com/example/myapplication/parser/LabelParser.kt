@@ -13,144 +13,62 @@ class LabelParser {
             .map { it.trim().replace(Regex("\\s+"), " ") }
             .filter { it.isNotBlank() }
 
-        var stockCode: String? = null
-        var salesOrder: String? = null
+        var palletId: String? = null
         var qty: String? = null
-        var po: String? = null
-        var weight: String? = null
+        var stockCode: String? = null
 
-        // 用来“排除污染”的字段（我们不一定要返回它，但要识别出来避免误判）
-        var partNumber: String? = null
-        var supplierId: String? = null
-        var date: String? = null
-        var barcodeLike: String? = null
+        // 记录 Qty 出现在哪一行（为了抓下面的 stockcode）
+        var qtyLineIndex: Int? = null
 
-        // 2) 主循环：优先“标签 → 值”
         for (i in lines.indices) {
 
             val lineRaw = lines[i]
             val lineNorm = normalize(lineRaw) // lower + 去音标
             val noSpace = lineNorm.replace(" ", "")
 
-            // ---------------- PO ----------------
-            // PO: GRO024 / PO : GRO024 / P0:
-            if (po == null && isPoLabel(noSpace)) {
-                po = extractAfterColonOrNearbyToken(lines, i) { token ->
-                    // PO 一般：字母+数字，允许 O/0 混淆
-                    token.matches(Regex("^[A-Z]{2,8}[0-9]{2,10}$"))
-                }?.let { fixPo(it) }
-                continue
-            }
-
-            // ---------------- Weight ----------------
-            // Weight: 2.3 kg
-            if (weight == null && isWeightLabel(lineNorm)) {
-                weight = Regex("\\d+(?:\\.\\d+)?").find(lineRaw)?.value
-                    ?: findNearby(lines, i, window = 2) { c ->
-                        c.matches(Regex("^\\d{1,4}(?:\\.\\d+)?$"))
-                    }
+            // ---------------- Pallet ID ----------------
+            // "Pallet ID 79773" 或 "Pallet ID" 下一行是数字
+            if (palletId == null && isPalletIdLabel(lineNorm)) {
+                palletId = findNearby(lines, i, window = 2) { c ->
+                    c.matches(Regex("^\\d{4,10}$")) // pallet id 可能 4~10 位
+                }
                 continue
             }
 
             // ---------------- Qty ----------------
-            // Qty: 80 / aty: 80 / dty: 80 / zty: 80 / 0ty: 80 ...
+            // "Qty 1086" 或 "Qty" 下一行是数字
             if (qty == null && isQtyLabel(noSpace, lineRaw)) {
-                qty = findNearby(lines, i, window = 3) { c ->
-                    c.matches(Regex("^\\d{1,5}$")) && c.toIntOrNull() in 1..50000
+                qty = findNearby(lines, i, window = 2) { c ->
+                    c.matches(Regex("^\\d{1,7}$")) && c.toIntOrNull() in 1..500000
                 }
-                continue
-            }
-
-            // ---------------- Sales Order ----------------
-            // Sales Order: 95237  (注意：这里是 5 位！)
-            if (salesOrder == null && isSalesOrderLabel(lineNorm)) {
-                salesOrder = findNearby(lines, i, window = 2) { candidate ->
-                    candidate.matches(Regex("^\\d{5,12}$"))  // ✅ 关键修复：允许 5 位
-                }?.also {
-                    // 额外保护：如果刚好和 partNumber 一样，宁可不要
-                    if (it == partNumber) salesOrder = null
-                }
-                continue
-            }
-
-            // ---------------- Stockcode ----------------
-            // Stockcode: F-19 / Stock Code: N4C3K7P9
-            if (stockCode == null && isStockCodeLabel(lineNorm)) {
-                stockCode = extractAfterColonOrNearbyToken(lines, i) { token ->
-                    looksLikeStockCodeToken(token)
-                }
-                continue
-            }
-
-            // ---------------- Part Number (用于排除污染) ----------------
-            // Part Number: 808089
-            if (partNumber == null && isPartNumberLabel(lineNorm)) {
-                partNumber = findNearby(lines, i, window = 2) { c ->
-                    c.matches(Regex("^\\d{4,12}$"))
-                }
-                continue
-            }
-
-            // ---------------- Supplier ID (用于排除污染) ----------------
-            if (supplierId == null && isSupplierIdLabel(lineNorm)) {
-                supplierId = findNearby(lines, i, window = 2) { c ->
-                    c.matches(Regex("^\\d{4,12}$"))
-                }
-                continue
-            }
-
-            // ---------------- Date (用于排除污染) ----------------
-            if (date == null && isDateLabel(lineNorm)) {
-                date = findNearby(lines, i, window = 2) { c ->
-                    c.matches(Regex("^\\d{4}$"))
-                }
-                continue
-            }
-
-            // ---------------- 可能的条码编号（用于排除污染） ----------------
-            // 例如：03E45971 这种经常被误当 stockCode
-            if (barcodeLike == null && looksLikeBarcodeId(lineRaw)) {
-                barcodeLike = lineRaw.trim()
+                qtyLineIndex = i
                 continue
             }
         }
 
-        // 3) fallback：如果 stockCode 没拿到，才允许“孤立行猜”
-        // 但会排除 partNumber / supplierId / date / barcodeLike / salesOrder / qty / weight
+        // ---------------- StockCode（Qty 下方那一行） ----------------
+        // 你的新规则：Qty 下面的第一条“纯数字行”，就是 stockcode
+        if (stockCode == null && qtyLineIndex != null) {
+            stockCode = findStockCodeUnderQty(lines, qtyLineIndex!!, palletId, qty)
+        }
+
+        // （可选兜底）如果没找到，再尝试全局找一个“像 stockcode 的纯数字”
+        // 但会排除 palletId / qty，避免误判
         if (stockCode == null) {
+            val excluded = setOfNotNull(palletId, qty)
             stockCode = lines
                 .asSequence()
+                .flatMap { tokenize(it).asSequence() }
                 .map { it.trim() }
-                .filter { it.isNotBlank() }
-                .filter { looksLikeStockCodeToken(it) }
-                .filterNot { it == partNumber }
-                .filterNot { it == supplierId }
-                .filterNot { it == date }
-                .filterNot { it == barcodeLike }
-                .filterNot { it == salesOrder }
-                .filterNot { it == qty }
+                .filter { it.matches(Regex("^\\d{4,10}$")) } // 纯数字 4~10 位
+                .filterNot { it in excluded }
                 .firstOrNull()
-        }
-
-        // 4) fallback：SalesOrder 兜底（排除 partNumber / date / supplierId）
-        if (salesOrder == null) {
-            val excluded = setOfNotNull(partNumber, supplierId, date)
-            salesOrder = lines
-                .mapNotNull { Regex("\\d{5,12}").find(it)?.value } // ✅ 允许 5 位
-                .firstOrNull { it !in excluded && it != qty }
-        }
-
-        // 5) fallback：Qty 兜底
-        if (qty == null) {
-            qty = pickBestQtyFallback(lines, salesOrder, weight, partNumber, supplierId, date)
         }
 
         return ScanResult(
             stockCode = stockCode,
-            salesOrder = salesOrder,
-            qty = qty,
-            po = po,
-            weight = weight
+            palletId = palletId,
+            qty = qty
         )
     }
 
@@ -158,62 +76,52 @@ class LabelParser {
     // 标签识别
     // ===============================
 
-    private fun isSalesOrderLabel(line: String): Boolean {
-        return line.contains("sales") && line.contains("order")
-    }
-
-    private fun isPoLabel(noSpace: String): Boolean {
-        // po / p0 / p o
-        return noSpace.startsWith("po") || noSpace.startsWith("p0")
-    }
-
-    private fun isWeightLabel(line: String): Boolean {
-        // weight / we1ght / wéight / ight:
-        if (line.contains("weight")) return true
-        if (line.contains("we1ght")) return true
-        if (line.contains("ight") && line.contains(":")) return true
+    private fun isPalletIdLabel(line: String): Boolean {
+        val noSpace = line.replace(" ", "")
+        if (noSpace.contains("palletid")) return true
+        if (line.contains("pallet") && (line.contains("id") || line.contains("1d") || line.contains("ld"))) return true
         return false
     }
 
     private fun isQtyLabel(noSpaceNorm: String, raw: String): Boolean {
         val n = normalize(raw).replace(" ", "")
 
-        // 匹配：Qty/Oty/aty/dty/zty/0ty/åty + optional :
+        // Qty / qtv / q1y / 0ty 等 OCR 混淆
         if (n.matches(Regex("^.?ty:?$"))) return true
-
-        // qtv / qly / q1y / qu 等
-        if (n.matches(Regex("^q.{0,2}:?$"))) {
-            if (!n.contains("search") && !n.contains("query")) return true
-        }
-
+        if (n.matches(Regex("^q.{0,2}:?$"))) return true
         if (n.contains("qty")) return true
+
         return false
-    }
-
-    private fun isStockCodeLabel(line: String): Boolean {
-        // stockcode / stock code / stock-code / stock:
-        val noSpace = line.replace(" ", "")
-        if (noSpace.contains("stockcode")) return true
-        if (line.contains("stock") && line.contains("code")) return true
-        return false
-    }
-
-    private fun isPartNumberLabel(line: String): Boolean {
-        val noSpace = line.replace(" ", "")
-        return noSpace.contains("partnumber") || (line.contains("part") && line.contains("number"))
-    }
-
-    private fun isSupplierIdLabel(line: String): Boolean {
-        val noSpace = line.replace(" ", "")
-        return noSpace.contains("supplierid") || (line.contains("supplier") && line.contains("id"))
-    }
-
-    private fun isDateLabel(line: String): Boolean {
-        return line.startsWith("date") || line.contains("date:")
     }
 
     // ===============================
-    // 值提取：扫窗口 + token
+    // StockCode: Qty 下方提取
+    // ===============================
+
+    private fun findStockCodeUnderQty(
+        lines: List<String>,
+        qtyIndex: Int,
+        palletId: String?,
+        qty: String?
+    ): String? {
+        val excluded = setOfNotNull(palletId, qty)
+
+        // 从 Qty 行往下找：第一条“纯数字 token”，就是 stockcode
+        for (j in (qtyIndex + 1) until minOf(lines.size, qtyIndex + 6)) {
+            val line = lines[j].trim()
+
+            // 如果遇到明显不是 stockcode 的标题，可以选择跳过/继续
+            // 这里保持简单：只要找到纯数字就返回
+            val token = tokenize(line).firstOrNull { it.matches(Regex("^\\d{4,10}$")) }
+            if (token != null && token !in excluded) {
+                return token
+            }
+        }
+        return null
+    }
+
+    // ===============================
+    // 通用：扫窗口 + token
     // ===============================
 
     private fun findNearby(
@@ -242,22 +150,6 @@ class LabelParser {
         return null
     }
 
-    private fun extractAfterColonOrNearbyToken(
-        lines: List<String>,
-        index: Int,
-        accept: (String) -> Boolean
-    ): String? {
-        extractAfterColon(lines[index])?.let { token ->
-            val t = token.trim()
-            if (accept(t)) return t
-        }
-
-        return findNearby(lines, index, window = 2) { token ->
-            val t = token.trim()
-            accept(t)
-        }
-    }
-
     private fun extractAfterColon(line: String): String? {
         val idx = line.indexOf(':')
         if (idx < 0) return null
@@ -273,83 +165,6 @@ class LabelParser {
             .split(" ")
             .map { it.trim() }
             .filter { it.isNotBlank() }
-    }
-
-    // ===============================
-    // StockCode token 规则（支持 F-19）
-    // ===============================
-
-    private fun looksLikeStockCodeToken(tokenRaw: String): Boolean {
-        val t = tokenRaw.trim()
-
-        // 允许字母数字 + 可选 - _
-        if (!t.matches(Regex("^[A-Z0-9][A-Z0-9_-]{1,19}$", RegexOption.IGNORE_CASE))) return false
-
-        // 必须至少含 1 字母
-        if (!t.any { it.isLetter() }) return false
-
-        // F-19 这种必须含数字（可选：如果你确实有全字母stockcode就把这行删掉）
-        if (!t.any { it.isDigit() }) return false
-
-        val lower = normalize(t)
-        if (lower.contains("premium") || lower.contains("labelparser") || lower.contains("camera")) return false
-        if (lower.contains("example.com") || lower.contains("describe")) return false
-
-        return true
-    }
-
-    // 条码编号：像 03E45971 这种，经常不是 stockcode
-    private fun looksLikeBarcodeId(raw: String): Boolean {
-        val s = raw.trim()
-        // 典型：2~3位数字 + 1字母 + 4~8位数字
-        return s.matches(Regex("^\\d{2,3}[A-Z]\\d{4,8}$", RegexOption.IGNORE_CASE))
-    }
-
-    // ===============================
-    // Qty fallback（排除污染数字）
-    // ===============================
-
-    private fun pickBestQtyFallback(
-        lines: List<String>,
-        salesOrder: String?,
-        weight: String?,
-        partNumber: String?,
-        supplierId: String?,
-        date: String?
-    ): String? {
-
-        val excluded = setOfNotNull(salesOrder, weight, partNumber, supplierId, date)
-
-        val candidates = mutableListOf<Int>()
-        for (l in lines) {
-            tokenize(l).forEach { t ->
-                if (t in excluded) return@forEach
-                val n = t.toIntOrNull()
-                if (n != null && n in 1..50000) candidates.add(n)
-            }
-        }
-        if (candidates.isEmpty()) return null
-        if (candidates.size == 1) return candidates[0].toString()
-
-        return candidates
-            .groupingBy { it }
-            .eachCount()
-            .maxByOrNull { it.value }
-            ?.key
-            ?.toString()
-    }
-
-    // ===============================
-    // PO 修正：0/O 混淆
-    // ===============================
-
-    private fun fixPo(poRaw: String): String {
-        // 常见：GRO024 被 OCR 成 GR0024（O->0）
-        // 简单规则：前缀字母段里把 0 改成 O
-        val up = poRaw.trim().uppercase()
-        val prefix = up.takeWhile { !it.isDigit() }.replace('0', 'O')
-        val suffix = up.dropWhile { !it.isDigit() }
-        return prefix + suffix
     }
 
     // ===============================
